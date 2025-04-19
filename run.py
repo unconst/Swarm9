@@ -16,7 +16,6 @@
 # DEALINGS IN THE SOFTWARE.
 
 import sys
-import data
 import time
 import copy
 import comms
@@ -31,6 +30,8 @@ import bittensor as bt
 import torch.nn.functional as F
 from rich.console import Console
 from async_lru import alru_cache
+from datasets import load_dataset
+import torchvision.transforms as transforms
 from typing import List, Dict, Tuple, Optional, Union
 
 # Subnet identifier.
@@ -52,6 +53,24 @@ model_layers = [
 
 # Create a sequential model from the layers
 model = nn.Sequential(*model_layers)
+
+# Build dataset
+dataset = load_dataset('mnist')
+def get_batch(bs: int, seed:str):
+    random.seed(seed)
+    # Sample random indices from training set
+    train_size = len(dataset['train'])
+    indices = random.sample(range(train_size), bs)
+    # Get samples at those indices
+    samples = [dataset['train'][i] for i in indices]
+    # Convert images and labels to tensors
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))  # MNIST mean and std
+    ])
+    images = torch.stack([transform(sample['image']) for sample in samples])
+    labels = torch.tensor([sample['label'] for sample in samples])
+    return images, labels
 
 def get_layers(rank: int, worldsize: int) -> List[nn.Module]:
     """
@@ -223,7 +242,7 @@ class Pipe:
         """
         # Get batch of images and labels for MNIST
         seed = await self.subtensor.get_block_hash(window * WINDOW_SIZE)
-        batch = await data.get_batch(batch_size=self.config.bs, seed=seed)
+        batch = get_batch(bs=self.config.bs, seed=seed)
         self.console.print(f'\t\t>> [green]Pulled[/green] batch for window={window}', style='tan')
         return batch
     
@@ -336,6 +355,7 @@ class Pipe:
                 # Calculate loss
                 loss = self.criterion(logits, labels)
                 loss.backward()
+                self.console.print(f"\n\t\tloss={loss}", style='bold green')
                 # Upload the gradients.
                 await self.upload( layer_idx, window, BACKWARD, activations.grad )
                 # Apply gradients using optimizer
@@ -464,7 +484,7 @@ class Pipe:
                 wait_for_inclusion = False
             )
             self.console.print(f"[bold green]\nSet weights on the chain.[/boldgreen]")
-    
+            
     async def run(self):
         """
         Main execution loop.
